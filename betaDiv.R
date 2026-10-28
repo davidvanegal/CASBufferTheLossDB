@@ -1,6 +1,18 @@
 # =============================================================================
 # BETA DIVERSITY & TAXONOMIC–FUNCTIONAL DECOUPLING — DUNG BEETLES
 # =============================================================================
+# This script uses the BAT package to compute abundance‑based Sørensen
+# dissimilarity matrices for both taxonomic and functional dimensions,
+# including their partition into substitution (turnover) and nestedness
+# components. It then performs:
+#   - NMDS, PERMANOVA, PERMDISP for each dimension.
+#   - Pairwise PERMANOVA to identify which cover pairs differ.
+#   - Dyadic (pairwise) modelling of total dissimilarity among cover types
+#     (SF‑CAS, SF‑PA, CAS‑PA) using beta GLMMs.
+#   - Modelling of the proportion of nestedness (ordinal beta regression)
+#     separately for each dimension, contrasting among cover pairs.
+#   - Mantel and Procrustes tests for taxonomic–functional decoupling.
+# =============================================================================
 
 # --- 0. Load packages --------------------------------------------------------
 library(dplyr)
@@ -10,11 +22,11 @@ library(vegan)
 library(BAT)
 library(glmmTMB)
 library(emmeans)
-library(multcomp)     
+library(multcomp)     # for cld()
 library(DHARMa)
 library(ggplot2)
 library(ggforce)
-library(pairwiseAdonis)
+library(pairwiseAdonis)   # for pairwise.adonis2
 
 # --- 1. Data import ---------------------------------------------------------
 dataDB <- read.csv("dataCASBufferDB.csv", header = TRUE, sep = ";")
@@ -24,31 +36,6 @@ dataDB$vegcover <- factor(dataDB$vegcover,
                                      "Cacao agroforestry system",
                                      "Pasture"))
 dataDB <- rename(dataDB, guild = strategy)
-
-# Base theme
-theme_base <- theme_classic() +
-  theme(
-    axis.title.x      = element_text(margin = margin(t = 10),
-                                     family = "serif", size = 20, face = "bold"),
-    axis.title.y      = element_text(margin = margin(r = 10),
-                                     family = "serif", size = 20, face = "bold"),
-    panel.background  = element_rect(fill = "white", color = NA),
-    plot.background   = element_rect(fill = "white", color = NA),
-    panel.border      = element_blank(),
-    panel.grid.minor  = element_blank(),
-    panel.grid.major  = element_line(color = "gray95", linetype = "dashed"),
-    axis.text         = element_text(family = "serif", size = 16),
-    axis.line         = element_line(colour = "black"),
-    legend.position   = "none",
-    legend.text       = element_text(family = "serif", size = 16),
-    legend.title      = element_text(family = "serif", size = 20, face = "bold"),
-    strip.background  = element_blank()
-  )
-
-# Strategy theme: adds facet strip styling
-theme_strategy <- theme_base +
-  theme(strip.background = element_rect(fill = "grey90", color = NA),
-        strip.text       = element_text(size = 10))
 
 # --- 2. Community matrix ----------------------------------------------------
 comm_site <- dataDB %>%
@@ -114,13 +101,18 @@ p_nmds_tax <- ggplot(nmds_scores_tax,
                      aes(x = NMDS1, y = NMDS2, color = vegcover, fill = vegcover)) +
   geom_point(aes(shape = vegcover), size = 3, stroke = 1) +
   geom_mark_ellipse(alpha = 0.15, expand = 0) +
-  labs(fill = "Vegetation cover", color = "Vegetation cover",
-       shape = "Vegetation cover") + 
   scale_color_manual(values = cols) +
   scale_fill_manual(values = cols) +
   scale_shape_manual(values = c(21, 22, 24)) +
-  theme_strategy +
-  theme(legend.position = "top")
+  theme_minimal(base_family = "serif") +
+  theme(legend.position = "top")+
+  labs(x     = NULL,
+                                      y     = "NMDS2",
+                                      color = "Vegetation cover",
+                                      shape = "Vegetation cover",
+                                      fill  = "Vegetation cover") +
+  theme_nmds+
+  coord_cartesian(xlim = c(-0.4, 0.6), ylim = c(-0.6, 0.6))
 
 # --- 6. NMDS, PERMANOVA, PERMDISP (functional) -------------------------------
 nmds_fun <- metaMDS(fun_dist_total, k = 2, trymax = 100)
@@ -134,15 +126,51 @@ nmds_scores_fun <- as.data.frame(scores(nmds_fun))
 nmds_scores_fun$siteID <- rownames(nmds_scores_fun)
 nmds_scores_fun <- left_join(nmds_scores_fun, metadata, by = "siteID")
 
-p_nmds_fun <- ggplot(nmds_scores_fun,
+theme_nmds <- theme_classic() +
+  theme(
+    axis.title      = element_text(size = 18, family = "serif", face = "bold"),
+    axis.text       = element_text(size = 16, family = "serif"),
+    legend.text     = element_text(size = 16, family = "serif"),
+    legend.title    = element_text(size = 18, family = "serif", face = "bold"),
+    legend.position = "top")
+
+p_nmds_fun <- ggplot(nmds_scores_fun, 
                      aes(x = NMDS1, y = NMDS2, color = vegcover, fill = vegcover)) +
   geom_point(aes(shape = vegcover), size = 3, stroke = 1) +
   geom_mark_ellipse(alpha = 0.15, expand = 0) +
   scale_color_manual(values = cols) +
   scale_fill_manual(values = cols) +
   scale_shape_manual(values = c(21, 22, 24)) +
-  theme_strategy +
-  theme(legend.position = "top")
+  theme_minimal(base_family = "serif") +
+  theme(legend.position = "top") +
+  labs(x     = "NMDS1",
+       y     = "NMDS2",
+       color = "Vegetation cover",
+       shape = "Vegetation cover",
+       fill  = "Vegetation cover") +
+  theme_nmds +
+  theme(legend.position = "none")+
+  coord_cartesian(xlim = c(-0.35, 0.75), ylim = c(-0.35, 0.25))
+
+library(ggplot2)
+library(patchwork)
+
+figura_combinada <- (p_nmds_tax / p_nmds_fun) + 
+  plot_annotation(
+    tag_levels = 'a', # Letras minúsculas ('a', 'b')
+    theme = theme(
+      plot.tag = element_text(face = "bold", size = 14), # Negrita y tamaño
+      plot.tag.position = "topright" # Ubicación automática en la esquina superior derecha
+    )
+  )
+
+# Ver el resultado
+figura_combinada
+
+ggsave("NMDS_DungBeetles.png", figura_combinada,
+       width = 12, height = 12, dpi = 600, bg = "white")
+ggsave("NMDS_DungBeetles.svg", figura_combinada,
+       width = 12, height = 12, dpi = 600, bg = "white")
 
 # --- 7. Pairwise PERMANOVA (taxonomic and functional) ------------------------
 cat("\n=== Pairwise PERMANOVA: Taxonomic ===\n")
@@ -280,13 +308,11 @@ p_dyad_tax <- ggplot(dyad_sub, aes(x = PairType, y = TaxDist, fill = PairType)) 
   scale_fill_manual(values = c("SF-CAS" = "darkorange4",
                                "SF-PA"  = "forestgreen",
                                "CAS-PA" = "springgreen")) +
-  labs(x = "Site pair type", 
-       y = "Taxonomic dissimilarity\nBray–Curtis") +
-  theme_strategy +
+  labs(x = "Site pair type", y = "Taxonomic dissimilarity (Bray–Curtis)") +
+  theme_classic(base_family = "serif") +
   theme(axis.text = element_text(size = 14),
         axis.title = element_text(size = 16, face = "bold"),
-        legend.position = "none",
-        plot.margin = margin(t = 10, r = 10, b = 10, l = 15))
+        legend.position = "none")
 
 p_dyad_fun <- ggplot(dyad_sub, aes(x = PairType, y = FunDist, fill = PairType)) +
   geom_boxplot(alpha = 0.7, outlier.shape = 21) +
@@ -296,13 +322,11 @@ p_dyad_fun <- ggplot(dyad_sub, aes(x = PairType, y = FunDist, fill = PairType)) 
   scale_fill_manual(values = c("SF-CAS" = "darkorange4",
                                "SF-PA"  = "forestgreen",
                                "CAS-PA" = "springgreen")) +
-  labs(x = "Site pair type", 
-       y = "Functional dissimilarity\nSørensen") + 
-  theme_strategy +
+  labs(x = "Site pair type", y = "Functional dissimilarity (Sørensen)") +
+  theme_classic(base_family = "serif") +
   theme(axis.text = element_text(size = 14),
         axis.title = element_text(size = 16, face = "bold"),
-        legend.position = "none",
-        plot.margin = margin(t = 10, r = 10, b = 10, l = 15))
+        legend.position = "none")
 
 # --- 16. Proportion of nestedness: between-pair comparisons per dimension -----
 dyad <- dyad %>%
@@ -381,12 +405,12 @@ p_prop_nest <- ggplot(prop_plot_data,
   scale_fill_manual(values = c("SF-CAS" = "lightblue",
                                "SF-PA"  = "cornflowerblue",
                                "CAS-PA" = "darkblue")) +
-  facet_wrap(~ Dimension, ncol = 1, scales = "free_x") +
+  facet_wrap(~ Dimension, nrow = 1) +
   labs(x = "Site pair type", y = "Proportion of nestedness") +
-  theme_strategy +
+  theme_classic(base_family = "serif") +
   theme(axis.text = element_text(size = 14),
         axis.title = element_text(size = 16, face = "bold"),
-        strip.text = element_blank(), 
+        strip.text = element_text(size = 14, face = "bold"),
         legend.position = "none")
 
 # --- 17. Mantel -----------------------------------------------
@@ -394,33 +418,12 @@ cat("\n=== Mantel test ===\n")
 mantel(tax_dist_total, fun_dist_total, method = "pearson", permutations = 9999)
 
 # --- 18. Display all plots ---------------------------------------------------
-p_nmds_tax <- p_nmds_tax + 
-  theme(axis.title.x    = element_blank())
-
-p_nmds_fun <- p_nmds_fun + 
-  theme(legend.position = "none")
-
-library(patchwork)
-fig_tax2 <- (p_nmds_tax + p_nmds_fun) +
-  plot_layout(ncol = 1)+
-  plot_annotation(
-    theme   = theme(plot.caption = element_text(hjust  = 0.5,
-                                                family = "serif",
-                                                size   = 20, face = "bold")))
-
-ggsave("figures/Fig_tax2.svg", fig_tax2, width = 13, height = 12, dpi = 600)
-
-p_dyad_tax <- p_dyad_tax +
-  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
-
-fig_tax3 <- (p_dyad_tax + p_dyad_fun) +
-  plot_layout(ncol = 1)
-
-ggsave("figures/Fig_tax3.svg", fig_tax3, width = 10, height = 8, dpi = 600)
-
+print(p_nmds_tax)
+print(p_nmds_fun)
+print(p_dyad_tax)
+print(p_dyad_fun)
 print(p_prop_nest)
 
-ggsave("figures/Fig_nest.svg", p_prop_nest, width = 10, height = 8, dpi = 600)
 # =============================================================================
 # END OF SCRIPT
 # =============================================================================
